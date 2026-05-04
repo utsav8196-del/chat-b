@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 8000;
 const app = express();
 
 app.use(cors({
-  origin: "https://chat-f-beta.vercel.app/",
+  origin: process.env.MODE === "production" ? "https://chat-f-beta.vercel.app/" : "http://localhost:3000",
   credentials: true
 }));
 
