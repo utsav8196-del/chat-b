@@ -12,12 +12,9 @@ const PORT = process.env.PORT || 8000;
 const app = express();
 
 app.use(cors({
-    origin: process.env.ALLOWED_ORIGINS?.split(",") || ["https://chat-f-beta.vercel.app/"],
-    origin: (origin, callback) => {
-        callback(null, origin || true);
-    },
-    credentials: true
-}))
+  origin: "https://chat-f-beta.vercel.app/",
+  credentials: true
+}));
 
 app.use(cookieParser())
 app.use(express.json());
