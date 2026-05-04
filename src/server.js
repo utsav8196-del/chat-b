@@ -11,8 +11,13 @@ const path = require("path");
 const PORT = process.env.PORT || 8000;
 const app = express();
 
+// CORS configuration from environment variables
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",")
+  : ["http://localhost:3000", "http://localhost:5173"];
+
 app.use(cors({
-  origin: process.env.MODE === "production" ? "https://chat-f-beta.vercel.app/" : "http://localhost:3000",
+  origin: allowedOrigins,
   credentials: true
 }));
 
