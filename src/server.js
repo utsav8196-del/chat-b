@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 8000;
 const app = express();
 
 app.use(cors({
-    // origin: process.env.ALLOWED_ORIGINS?.split(",") || ["http://localhost:3000", "https://stackchat-five.vercel.app"],
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || ["https://chat-f-beta.vercel.app/"],
     origin: (origin, callback) => {
         callback(null, origin || true);
     },
