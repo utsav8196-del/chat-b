@@ -1,32 +1,60 @@
 const { StreamChat } = require("stream-chat");
 require("dotenv").config();
 
-const apiKey = process.env.STREAM_API_KEY;
-const apiSecret = process.env.STREAM_SECRET_KEY;
+const STREAM_API_KEY = process.env.STREAM_API_KEY;
+const STREAM_API_SECRET = process.env.STREAM_API_SECRET;
 
-if (!apiKey || !apiSecret) {
-    console.error("Stream API key or Secret is missing");
-}
+let streamClient = null;
 
-const streamClient = StreamChat.getInstance(apiKey, apiSecret);
+const initializeStreamChat = () => {
+  if (streamClient) return streamClient;
+
+  if (!STREAM_API_KEY || !STREAM_API_SECRET) {
+    console.warn(
+      "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET."
+    );
+    return null;
+  }
+
+  try {
+    streamClient = StreamChat.getInstance(STREAM_API_KEY, STREAM_API_SECRET);
+    return streamClient;
+  } catch (error) {
+    console.error("Failed to initialize Stream Chat:", error.message);
+    return null;
+  }
+};
 
 const upsertStreamUser = async (userData) => {
-    try {
-        await streamClient.upsertUsers([userData]);
-        return userData;
-    } catch (error) {
-        console.error("Error upserting Stream user:", error);
+  try {
+    const client = initializeStreamChat();
+    if (!client) {
+      throw new Error("Stream Chat client not initialized");
     }
+    await client.upsertUsers([userData]);
+    return userData;
+  } catch (error) {
+    console.error("Error upserting Stream user:", error.message);
+    throw error;
+  }
 };
 
 const generateStreamToken = (userId) => {
-    try {
-        // ensure userId is a string
-        const userIdStr = userId.toString();
-        return streamClient.createToken(userIdStr);
-    } catch (error) {
-        console.error("Error generating Stream token:", error);
+  try {
+    const client = initializeStreamChat();
+    if (!client) {
+      throw new Error("Stream Chat client not initialized");
     }
+    const userIdStr = userId.toString();
+    return client.createToken(userIdStr);
+  } catch (error) {
+    console.error("Error generating Stream token:", error.message);
+    throw error;
+  }
 };
 
-module.exports = { upsertStreamUser, generateStreamToken }
+module.exports = {
+  initializeStreamChat,
+  upsertStreamUser,
+  generateStreamToken,
+};

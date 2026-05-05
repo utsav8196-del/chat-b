@@ -2,45 +2,35 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const mongoose = require("mongoose");
-const crypto = require("crypto");
 const { StreamChat } = require("stream-chat");
 
-let bcrypt = null;
-try {
-  bcrypt = require("bcryptjs");
-} catch (_error) {
-  bcrypt = null;
-}
-
+// Load environment variables
 dotenv.config();
 
+// Import routes and utilities
+const authRoutes = require("./routes/auth.route");
+const userRoutes = require("./routes/user.route");
+const chatRoutes = require("./routes/chat.route");
+const { connectDB } = require("./lib/db");
+const { initializeStreamChat } = require("./lib/stream");
+
+// Initialize Express app
 const app = express();
 
+// Environment variables
 const PORT = process.env.PORT || 5000;
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 const MONGO_URI = process.env.MONGO_URI;
-const JWT_SECRET = process.env.JWT_SECRET || "stackchat_dev_secret_change_me";
 const STREAM_API_KEY = process.env.STREAM_API_KEY;
-const STREAM_API_SECRET = process.env.STREAM_API_SECRET;
+
+// Setup allowed origins
 const allowedOrigins = CLIENT_URL.split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
 allowedOrigins.push("https://chat-f-beta.vercel.app");
 
-let streamServerClient = null;
-
-if (STREAM_API_KEY && STREAM_API_SECRET) {
-  streamServerClient = StreamChat.getInstance(
-    STREAM_API_KEY,
-    STREAM_API_SECRET
-  );
-} else {
-  console.warn(
-    "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET."
-  );
-}
-
+// CORS Configuration
 app.use(
   cors({
     origin(origin, callback) {
@@ -51,195 +41,18 @@ app.use(
       ) {
         return callback(null, true);
       }
-
       return callback(null, false);
     },
     credentials: true,
   })
 );
+
 app.options("*", cors());
+
+// Middleware
 app.use(express.json({ limit: "1mb" }));
 
-const userSchema = new mongoose.Schema(
-  {
-    fullName: { type: String, required: true, trim: true },
-    email: {
-      type: String,
-      required: true,
-      unique: true,
-      lowercase: true,
-      trim: true,
-    },
-    passwordHash: { type: String, default: "", select: false },
-    password: { type: String, default: "", select: false },
-    profilePic: { type: String, default: "" },
-    isOnboarded: { type: Boolean, default: true },
-  },
-  { timestamps: true }
-);
-
-const User = mongoose.models.User || mongoose.model("User", userSchema);
-
-function isSafeImageUrl(value) {
-  if (!value || typeof value !== "string") return false;
-
-  return (
-    value.startsWith("https://") ||
-    value.startsWith("http://") ||
-    value.startsWith("data:image/")
-  );
-}
-
-function getAvatarUrl(seed, currentAvatar = "") {
-  if (
-    isSafeImageUrl(currentAvatar) &&
-    !currentAvatar.includes("avatar.iran.liara.run")
-  ) {
-    return currentAvatar;
-  }
-
-  return `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(
-    seed || "StackChat User"
-  )}`;
-}
-
-function serializeUser(user) {
-  const name = user.fullName || user.email || user._id?.toString();
-
-  return {
-    _id: user._id,
-    id: user._id,
-    fullName: user.fullName,
-    email: user.email,
-    profilePic: getAvatarUrl(name, user.profilePic),
-    isOnboarded: user.isOnboarded,
-  };
-}
-
-function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
-  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(password, savedHash) {
-  if (!password || !savedHash || typeof savedHash !== "string") return false;
-
-  if (savedHash.startsWith("$2")) {
-    return bcrypt ? bcrypt.compareSync(password, savedHash) : false;
-  }
-
-  if (!savedHash.includes(":")) return false;
-
-  const [salt, hash] = savedHash.split(":");
-  if (!salt || !hash) return false;
-
-  const incomingHash = hashPassword(password, salt).split(":")[1];
-
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(hash, "hex"),
-      Buffer.from(incomingHash, "hex")
-    );
-  } catch (_error) {
-    return false;
-  }
-}
-
-function base64Url(input) {
-  return Buffer.from(input)
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
-
-function signToken(payload) {
-  const header = base64Url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
-  const body = base64Url(
-    JSON.stringify({
-      ...payload,
-      exp: Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60,
-    })
-  );
-  const signature = crypto
-    .createHmac("sha256", JWT_SECRET)
-    .update(`${header}.${body}`)
-    .digest("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-
-  return `${header}.${body}.${signature}`;
-}
-
-function verifyToken(token) {
-  if (!token) return null;
-
-  const [header, body, signature] = token.split(".");
-  if (!header || !body || !signature) return null;
-
-  const expectedSignature = crypto
-    .createHmac("sha256", JWT_SECRET)
-    .update(`${header}.${body}`)
-    .digest("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-
-  try {
-    if (
-      !crypto.timingSafeEqual(
-        Buffer.from(signature),
-        Buffer.from(expectedSignature)
-      )
-    ) {
-      return null;
-    }
-  } catch (_error) {
-    return null;
-  }
-
-  const payload = JSON.parse(Buffer.from(body, "base64").toString("utf8"));
-  if (payload.exp && payload.exp < Math.floor(Date.now() / 1000)) return null;
-
-  return payload;
-}
-
-function getCookie(req, name) {
-  const cookieHeader = req.headers.cookie;
-  if (!cookieHeader) return null;
-
-  const cookies = cookieHeader.split(";").map((cookie) => cookie.trim());
-  const cookie = cookies.find((item) => item.startsWith(`${name}=`));
-
-  return cookie ? decodeURIComponent(cookie.split("=")[1]) : null;
-}
-
-function sendAuthCookie(res, token) {
-  const isProduction = process.env.NODE_ENV === "production";
-
-  res.cookie("jwt", token, {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? "none" : "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
-}
-
-function requireMongo(res) {
-  if (mongoose.connection.readyState === 1) return true;
-
-  res.status(503).json({
-    message: "Database is not connected. Check MONGO_URI in Render.",
-  });
-
-  return false;
-}
-
-function getSafeUserId(userId) {
-  return userId.trim().replace(/[^a-zA-Z0-9@_-]/g, "_");
-}
-
+// Health Check Endpoints
 app.get("/", (_req, res) => {
   res.json({ ok: true, message: "StackChat backend is running" });
 });
@@ -249,164 +62,38 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     mongoConfigured: Boolean(MONGO_URI),
     mongoConnected: mongoose.connection.readyState === 1,
-    streamConfigured: Boolean(streamServerClient),
+    streamConfigured: Boolean(process.env.STREAM_API_KEY && process.env.STREAM_API_SECRET),
     streamApiKey: STREAM_API_KEY || null,
   });
 });
 
-app.post("/api/auth/signup", async (req, res) => {
-  try {
-    if (!requireMongo(res)) return;
+// Route imports
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/chat", chatRoutes);
 
-    const { fullName, email, password } = req.body;
-
-    if (!fullName || !email || !password) {
-      return res
-        .status(400)
-        .json({ message: "fullName, email and password are required" });
-    }
-
-    if (password.length < 6) {
-      return res
-        .status(400)
-        .json({ message: "Password must be at least 6 characters" });
-    }
-
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(409).json({ message: "Email is already registered" });
-    }
-
-    const user = await User.create({
-      fullName,
-      email,
-      passwordHash: hashPassword(password),
-      profilePic: getAvatarUrl(fullName),
-    });
-
-    sendAuthCookie(res, signToken({ userId: user._id.toString() }));
-
-    res.status(201).json(serializeUser(user));
-  } catch (error) {
-    console.error("Signup failed:", error);
-    res.status(500).json({ message: "Signup failed" });
-  }
-});
-
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    if (!requireMongo(res)) return;
-
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" });
-    }
-
-    const user = await User.findOne({ email }).select("+passwordHash +password");
-    const savedPassword = user?.passwordHash || user?.password;
-
-    if (!user || !verifyPassword(password, savedPassword)) {
-      return res.status(401).json({ message: "Invalid email or password" });
-    }
-
-    sendAuthCookie(res, signToken({ userId: user._id.toString() }));
-
-    res.json(serializeUser(user));
-  } catch (error) {
-    console.error("Login failed:", error);
-    res.status(500).json({ message: "Login failed" });
-  }
-});
-
-app.post("/api/auth/logout", (_req, res) => {
-  res.clearCookie("jwt", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-  });
-
-  res.json({ message: "Logged out successfully" });
-});
-
-app.get("/api/auth/me", async (req, res) => {
-  try {
-    if (!requireMongo(res)) return;
-
-    const payload = verifyToken(getCookie(req, "jwt"));
-
-    if (!payload?.userId) {
-      return res.status(401).json({ message: "Not authenticated" });
-    }
-
-    const user = await User.findById(payload.userId);
-    if (!user) {
-      return res.status(401).json({ message: "User not found" });
-    }
-
-    res.json(serializeUser(user));
-  } catch (error) {
-    console.error("Auth check failed:", error);
-    res.status(401).json({ message: "Not authenticated" });
-  }
-});
-
-app.get("/api/users", async (req, res) => {
-  try {
-    if (!requireMongo(res)) return;
-
-    const payload = verifyToken(getCookie(req, "jwt"));
-    const query = payload?.userId ? { _id: { $ne: payload.userId } } : {};
-    const users = await User.find(query).limit(50);
-
-    res.json(users.map(serializeUser));
-  } catch (error) {
-    console.error("Get users failed:", error);
-    res.status(500).json({ message: "Unable to get users" });
-  }
-});
-
-app.get("/api/users/friends", async (req, res) => {
-  try {
-    if (!requireMongo(res)) return;
-
-    const payload = verifyToken(getCookie(req, "jwt"));
-
-    if (!payload?.userId) {
-      return res.status(401).json({ message: "Not authenticated" });
-    }
-
-    const users = await User.find({ _id: { $ne: payload.userId } }).limit(50);
-
-    res.json(users.map(serializeUser));
-  } catch (error) {
-    console.error("Get friends failed:", error);
-    res.status(500).json({ message: "Unable to get friends" });
-  }
-});
-
+// Stream Chat Configuration Endpoints
 app.get("/api/stream/config", (_req, res) => {
   if (!STREAM_API_KEY) {
     return res
       .status(500)
       .json({ message: "STREAM_API_KEY is missing from environment variables." });
   }
-
   res.json({ apiKey: STREAM_API_KEY });
 });
 
 app.get("/api/stream/verify", async (_req, res) => {
   try {
-    if (!streamServerClient) {
+    const streamClient = initializeStreamChat();
+    if (!streamClient) {
       return res.status(500).json({
         ok: false,
         apiKey: STREAM_API_KEY || null,
-        message:
-          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET.",
+        message: "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET.",
       });
     }
 
-    await streamServerClient.upsertUser({
+    await streamClient.upsertUser({
       id: "stackchat_config_check",
       name: "StackChat Config Check",
     });
@@ -426,91 +113,39 @@ app.get("/api/stream/verify", async (_req, res) => {
   }
 });
 
-async function createStreamTokenResponse(req, res) {
-  try {
-    if (!streamServerClient) {
-      return res.status(500).json({
-        message:
-          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET.",
-      });
-    }
-
-    const { userId, name, image } = req.body;
-
-    if (!userId || typeof userId !== "string") {
-      return res.status(400).json({ message: "userId is required" });
-    }
-
-    const safeUserId = getSafeUserId(userId);
-    const displayName = name?.trim() || safeUserId;
-    const user = {
-      id: safeUserId,
-      name: displayName,
-      image: getAvatarUrl(displayName, image),
-    };
-
-    await streamServerClient.upsertUser(user);
-
-    res.json({
-      apiKey: STREAM_API_KEY,
-      token: streamServerClient.createToken(safeUserId),
-      user,
-    });
-  } catch (error) {
-    console.error("Stream token creation failed:", error);
-    res.status(500).json({
-      message: `Unable to create Stream token. Confirm STREAM_API_SECRET belongs to STREAM_API_KEY "${STREAM_API_KEY}".`,
-    });
-  }
-}
-
-app.post("/api/stream/token", createStreamTokenResponse);
-app.post("/api/chat/token", createStreamTokenResponse);
-
-app.post("/api/stream/channel", async (req, res) => {
-  try {
-    if (!streamServerClient) {
-      return res.status(500).json({
-        message:
-          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET.",
-      });
-    }
-
-    const { channelId = "general", name = "General", userIds = [] } = req.body;
-    const members = userIds
-      .filter((id) => typeof id === "string" && id.trim())
-      .map(getSafeUserId);
-
-    const channel = streamServerClient.channel("messaging", channelId, {
-      name,
-      members,
-      created_by_id: members[0] || "stackchat_config_check",
-    });
-
-    await channel.create();
-
-    res.json({ ok: true, channelId });
-  } catch (error) {
-    console.error("Stream channel creation failed:", error);
-    res.status(500).json({ message: "Unable to create Stream channel" });
-  }
+// Error Handling Middleware
+app.use((err, _req, res, _next) => {
+  console.error("Server error:", err);
+  res.status(err.status || 500).json({
+    message: err.message || "Internal server error",
+  });
 });
 
-async function startServer() {
-  app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+// 404 Handler
+app.use((_req, res) => {
+  res.status(404).json({ message: "Route not found" });
+});
 
-  if (MONGO_URI) {
-    try {
-      await mongoose.connect(MONGO_URI);
-      console.log("MongoDB connected");
-    } catch (error) {
-      console.error("MongoDB connection failed:", error.message);
-      console.log("Server is still running without MongoDB connection");
+// Start Server
+async function startServer() {
+  try {
+    // Connect to MongoDB
+    if (MONGO_URI) {
+      await connectDB();
+      console.log("MongoDB connected successfully");
+    } else {
+      console.warn("MONGO_URI not set, starting without MongoDB");
     }
-  } else {
-    console.log("MONGO_URI not set, starting without MongoDB");
+
+    // Start listening
+    app.listen(PORT, () => {
+      console.log(`\n✓ Server running on http://localhost:${PORT}`);
+      console.log(`✓ Environment: ${process.env.NODE_ENV || "development"}`);
+      console.log(`✓ CORS Origins: ${allowedOrigins.join(", ")}\n`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error.message);
+    process.exit(1);
   }
 }
 
