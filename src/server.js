@@ -14,14 +14,18 @@ const MONGO_URI = process.env.MONGO_URI;
 const STREAM_API_KEY = process.env.STREAM_API_KEY;
 const STREAM_API_SECRET = process.env.STREAM_API_SECRET;
 
-if (!STREAM_API_KEY || !STREAM_API_SECRET) {
-  throw new Error("STREAM_API_KEY and STREAM_API_SECRET are required in backend .env");
-}
+let streamServerClient = null;
 
-const streamServerClient = StreamChat.getInstance(
-  STREAM_API_KEY,
-  STREAM_API_SECRET
-);
+if (STREAM_API_KEY && STREAM_API_SECRET) {
+  streamServerClient = StreamChat.getInstance(
+    STREAM_API_KEY,
+    STREAM_API_SECRET
+  );
+} else {
+  console.warn(
+    "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET in environment variables."
+  );
+}
 
 app.use(
   cors({
@@ -41,11 +45,18 @@ app.get("/", (_req, res) => {
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
-    streamApiKey: STREAM_API_KEY,
+    streamConfigured: Boolean(streamServerClient),
+    streamApiKey: STREAM_API_KEY || null,
   });
 });
 
 app.get("/api/stream/config", (_req, res) => {
+  if (!STREAM_API_KEY) {
+    return res.status(500).json({
+      message: "STREAM_API_KEY is missing from backend environment variables.",
+    });
+  }
+
   res.json({
     apiKey: STREAM_API_KEY,
   });
@@ -53,6 +64,15 @@ app.get("/api/stream/config", (_req, res) => {
 
 app.get("/api/stream/verify", async (_req, res) => {
   try {
+    if (!streamServerClient) {
+      return res.status(500).json({
+        ok: false,
+        apiKey: STREAM_API_KEY || null,
+        message:
+          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET in Render environment variables.",
+      });
+    }
+
     await streamServerClient.upsertUser({
       id: "stackchat_config_check",
       name: "StackChat Config Check",
@@ -75,6 +95,13 @@ app.get("/api/stream/verify", async (_req, res) => {
 
 app.post("/api/stream/token", async (req, res) => {
   try {
+    if (!streamServerClient) {
+      return res.status(500).json({
+        message:
+          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET in Render environment variables.",
+      });
+    }
+
     const { userId, name, image } = req.body;
 
     if (!userId || typeof userId !== "string") {
@@ -113,6 +140,13 @@ app.post("/api/stream/token", async (req, res) => {
 
 app.post("/api/stream/channel", async (req, res) => {
   try {
+    if (!streamServerClient) {
+      return res.status(500).json({
+        message:
+          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET in Render environment variables.",
+      });
+    }
+
     const {
       channelId = "general",
       name = "General",
