@@ -2,17 +2,19 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const mongoose = require("mongoose");
-const { StreamChat } = require("stream-chat");
+const cookieParser = require("cookie-parser");
 
 // Load environment variables
 dotenv.config();
 
-// Import routes and utilities
+// Import routes
 const authRoutes = require("./routes/auth.route");
 const userRoutes = require("./routes/user.route");
 const chatRoutes = require("./routes/chat.route");
+
+// Import utilities
 const { connectDB } = require("./lib/db");
-const { initializeStreamChat } = require("./lib/stream");
+const { initializeStreamChat, generateStreamToken } = require("./lib/stream");
 
 // Initialize Express app
 const app = express();
@@ -51,6 +53,8 @@ app.options("*", cors());
 
 // Middleware
 app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ limit: "1mb", extended: true }));
+app.use(cookieParser());
 
 // Health Check Endpoints
 app.get("/", (_req, res) => {
@@ -62,8 +66,7 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     mongoConfigured: Boolean(MONGO_URI),
     mongoConnected: mongoose.connection.readyState === 1,
-    streamConfigured: Boolean(process.env.STREAM_API_KEY && process.env.STREAM_API_SECRET),
-    streamApiKey: STREAM_API_KEY || null,
+    streamConfigured: Boolean(STREAM_API_KEY && process.env.STREAM_API_SECRET),
   });
 });
 
@@ -72,43 +75,37 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
 
-// Stream Chat Configuration Endpoints
-app.get("/api/stream/config", (_req, res) => {
-  if (!STREAM_API_KEY) {
-    return res
-      .status(500)
-      .json({ message: "STREAM_API_KEY is missing from environment variables." });
-  }
-  res.json({ apiKey: STREAM_API_KEY });
-});
-
-app.get("/api/stream/verify", async (_req, res) => {
+// Stream Chat Token Endpoint
+app.post("/api/stream/token", (req, res) => {
   try {
     const streamClient = initializeStreamChat();
     if (!streamClient) {
       return res.status(500).json({
-        ok: false,
-        apiKey: STREAM_API_KEY || null,
         message: "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET.",
       });
     }
 
-    await streamClient.upsertUser({
-      id: "stackchat_config_check",
-      name: "StackChat Config Check",
-    });
+    const { userId, name, image } = req.body;
 
+    if (!userId || typeof userId !== "string") {
+      return res.status(400).json({ message: "userId is required" });
+    }
+
+    const token = generateStreamToken(userId);
+    
     res.json({
-      ok: true,
       apiKey: STREAM_API_KEY,
-      message: "Stream API key and secret are valid.",
+      token,
+      user: {
+        id: userId,
+        name: name || userId,
+        image: image || "",
+      },
     });
   } catch (error) {
-    console.error("Stream verification failed:", error);
-    res.status(401).json({
-      ok: false,
-      apiKey: STREAM_API_KEY,
-      message: `STREAM_API_SECRET does not match STREAM_API_KEY "${STREAM_API_KEY}".`,
+    console.error("Stream token generation failed:", error);
+    res.status(500).json({
+      message: "Unable to generate Stream token",
     });
   }
 });
@@ -132,21 +129,24 @@ async function startServer() {
     // Connect to MongoDB
     if (MONGO_URI) {
       await connectDB();
-      console.log("MongoDB connected successfully");
+      console.log("✓ MongoDB connected successfully");
     } else {
-      console.warn("MONGO_URI not set, starting without MongoDB");
+      console.warn("⚠ MONGO_URI not set, starting without MongoDB");
     }
 
     // Start listening
     app.listen(PORT, () => {
       console.log(`\n✓ Server running on http://localhost:${PORT}`);
       console.log(`✓ Environment: ${process.env.NODE_ENV || "development"}`);
-      console.log(`✓ CORS Origins: ${allowedOrigins.join(", ")}\n`);
+      console.log(`✓ CORS Enabled for: ${allowedOrigins.slice(0, 2).join(", ")}...`);
+      console.log(`✓ Database: ${mongoose.connection.readyState === 1 ? "Connected" : "Disconnected"}\n`);
     });
   } catch (error) {
-    console.error("Failed to start server:", error.message);
+    console.error("✗ Failed to start server:", error.message);
     process.exit(1);
   }
 }
 
 startServer();
+
+module.exports = app;

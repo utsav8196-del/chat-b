@@ -40,8 +40,13 @@ const userSchema = mongoose.Schema(
             },
         ],
     },
-    { timestamps: true } // to use for createAt, updatedAt likewise fields
+    { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
+
+// Virtual for id
+userSchema.virtual("id").get(function () {
+    return this._id.toString();
+});
 
 // pre hook - Before saving the users to the database, we have to hash the passwords
 // Password Hashing
