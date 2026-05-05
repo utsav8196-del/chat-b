@@ -56,8 +56,8 @@ const signup = async (req, res) => {
         res.cookie("token", token, {
             maxAge: 7 * 24 * 60 * 60 * 1000,
             httpOnly: true, // prevent XSS attacks,
-            sameSite: "strict", // prevent CSRF attacks
-            // secure: process.env.NODE_ENV === "production",
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "strict", // allow cross-origin in production
+            secure: process.env.NODE_ENV === "production", // HTTPS only in production
         });
 
         res.status(201).json({ success: true, user: newUser });
@@ -89,8 +89,8 @@ const login = async (req, res) => {
         res.cookie("token", token, {
             maxAge: 7 * 24 * 60 * 60 * 1000,
             httpOnly: true, // prevent XSS attacks,
-            sameSite: "strict", // prevent CSRF attacks
-            // secure: process.env.NODE_ENV === "production",
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "strict", // allow cross-origin in production
+            secure: process.env.NODE_ENV === "production", // HTTPS only in production
         });
 
         res.status(200).json({ success: true, user });
