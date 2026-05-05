@@ -101,10 +101,22 @@ const login = async (req, res) => {
     }
 }
 
-const logout = async (req, res) => {
-    res.clearCookie("token");
-    res.status(200).json({ success: true, message: "Logout Successful" })
-}
+// const logout = async (req, res) => {
+//     res.clearCookie("token");
+//     res.status(200).json({ success: true, message: "Logout Successful" })
+// }
+// controllers/authController.js
+ const logout = (req, res) => {
+  res.clearCookie("jwt", {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV !== "development",
+  });
+
+  res.status(200).json({ message: "Logged out successfully" });
+};
+
+
 
 const onboarding = async (req, res) => {
     try {
