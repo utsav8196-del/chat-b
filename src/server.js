@@ -5,6 +5,13 @@ const mongoose = require("mongoose");
 const crypto = require("crypto");
 const { StreamChat } = require("stream-chat");
 
+let bcrypt = null;
+try {
+  bcrypt = require("bcryptjs");
+} catch (_error) {
+  bcrypt = null;
+}
+
 dotenv.config();
 
 const app = express();
@@ -68,7 +75,13 @@ const userSchema = new mongoose.Schema(
     },
     passwordHash: {
       type: String,
-      required: true,
+      default: "",
+      select: false,
+    },
+    password: {
+      type: String,
+      default: "",
+      select: false,
     },
     profilePic: {
       type: String,
@@ -93,7 +106,21 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
 }
 
 function verifyPassword(password, savedHash) {
+  if (!password || !savedHash || typeof savedHash !== "string") {
+    return false;
+  }
+
+  if (savedHash.startsWith("$2")) {
+    return bcrypt ? bcrypt.compareSync(password, savedHash) : false;
+  }
+
+  if (!savedHash.includes(":")) {
+    return false;
+  }
+
   const [salt, hash] = savedHash.split(":");
+  if (!salt || !hash) return false;
+
   const incomingHash = hashPassword(password, salt).split(":")[1];
 
   return crypto.timingSafeEqual(
@@ -272,8 +299,10 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ email });
-    if (!user || !verifyPassword(password, user.passwordHash)) {
+    const user = await User.findOne({ email }).select("+passwordHash +password");
+    const savedPassword = user?.passwordHash || user?.password;
+
+    if (!user || !verifyPassword(password, savedPassword)) {
       return res.status(401).json({
         message: "Invalid email or password",
       });
