@@ -206,13 +206,27 @@ function sendAuthCookie(res, token) {
   });
 }
 
+function getSafeAvatarUrl(user) {
+  const name = user.fullName || user.email || user._id?.toString() || "StackChat User";
+  const currentAvatar = user.profilePic || user.image || "";
+
+  if (
+    currentAvatar &&
+    !currentAvatar.includes("avatar.iran.liara.run")
+  ) {
+    return currentAvatar;
+  }
+
+  return `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(name)}`;
+}
+
 function serializeUser(user) {
   return {
     _id: user._id,
     id: user._id,
     fullName: user.fullName,
     email: user.email,
-    profilePic: user.profilePic,
+    profilePic: getSafeAvatarUrl(user),
     isOnboarded: user.isOnboarded,
   };
 }
@@ -360,6 +374,48 @@ app.get("/api/auth/me", async (req, res) => {
   }
 });
 
+app.get("/api/users", async (req, res) => {
+  try {
+    if (!requireMongo(res)) return;
+
+    const token = getCookie(req, "jwt");
+    const payload = verifyToken(token);
+    const query = payload?.userId ? { _id: { $ne: payload.userId } } : {};
+    const users = await User.find(query).limit(50);
+
+    res.json(users.map(serializeUser));
+  } catch (error) {
+    console.error("Get users failed:", error);
+    res.status(500).json({
+      message: "Unable to get users",
+    });
+  }
+});
+
+app.get("/api/users/friends", async (req, res) => {
+  try {
+    if (!requireMongo(res)) return;
+
+    const token = getCookie(req, "jwt");
+    const payload = verifyToken(token);
+
+    if (!payload?.userId) {
+      return res.status(401).json({
+        message: "Not authenticated",
+      });
+    }
+
+    const users = await User.find({ _id: { $ne: payload.userId } }).limit(50);
+
+    res.json(users.map(serializeUser));
+  } catch (error) {
+    console.error("Get friends failed:", error);
+    res.status(500).json({
+      message: "Unable to get friends",
+    });
+  }
+});
+
 app.get("/api/stream/config", (_req, res) => {
   if (!STREAM_API_KEY) {
     return res.status(500).json({
@@ -427,8 +483,9 @@ app.post("/api/stream/token", async (req, res) => {
       id: safeUserId,
       name: displayName,
       image:
-        image ||
-        `https://getstream.io/random_png/?name=${encodeURIComponent(displayName)}`,
+        image && !image.includes("avatar.iran.liara.run")
+          ? image
+          : `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(displayName)}`,
     };
 
     await streamServerClient.upsertUser(user);
@@ -472,8 +529,9 @@ app.post("/api/chat/token", async (req, res) => {
       id: safeUserId,
       name: displayName,
       image:
-        image ||
-        `https://getstream.io/random_png/?name=${encodeURIComponent(displayName)}`,
+        image && !image.includes("avatar.iran.liara.run")
+          ? image
+          : `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(displayName)}`,
     };
 
     await streamServerClient.upsertUser(user);
