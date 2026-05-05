@@ -13,6 +13,9 @@ const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
 const MONGO_URI = process.env.MONGO_URI;
 const STREAM_API_KEY = process.env.STREAM_API_KEY;
 const STREAM_API_SECRET = process.env.STREAM_API_SECRET;
+const allowedOrigins = CLIENT_URL.split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 let streamServerClient = null;
 
@@ -29,7 +32,13 @@ if (STREAM_API_KEY && STREAM_API_SECRET) {
 
 app.use(
   cors({
-    origin: CLIENT_URL,
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(null, false);
+    },
     credentials: true,
   })
 );
@@ -45,6 +54,8 @@ app.get("/", (_req, res) => {
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
+    mongoConfigured: Boolean(MONGO_URI),
+    mongoConnected: mongoose.connection.readyState === 1,
     streamConfigured: Boolean(streamServerClient),
     streamApiKey: STREAM_API_KEY || null,
   });
@@ -138,6 +149,49 @@ app.post("/api/stream/token", async (req, res) => {
   }
 });
 
+app.post("/api/chat/token", async (req, res) => {
+  try {
+    if (!streamServerClient) {
+      return res.status(500).json({
+        message:
+          "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET in Render environment variables.",
+      });
+    }
+
+    const { userId, name, image } = req.body;
+
+    if (!userId || typeof userId !== "string") {
+      return res.status(400).json({
+        message: "userId is required",
+      });
+    }
+
+    const safeUserId = userId.trim().replace(/[^a-zA-Z0-9@_-]/g, "_");
+    const displayName = name?.trim() || safeUserId;
+
+    const user = {
+      id: safeUserId,
+      name: displayName,
+      image:
+        image ||
+        `https://getstream.io/random_png/?name=${encodeURIComponent(displayName)}`,
+    };
+
+    await streamServerClient.upsertUser(user);
+
+    res.json({
+      apiKey: STREAM_API_KEY,
+      token: streamServerClient.createToken(safeUserId),
+      user,
+    });
+  } catch (error) {
+    console.error("Chat token creation failed:", error);
+    res.status(500).json({
+      message: `Unable to create chat token. Confirm STREAM_API_SECRET belongs to STREAM_API_KEY "${STREAM_API_KEY}".`,
+    });
+  }
+});
+
 app.post("/api/stream/channel", async (req, res) => {
   try {
     if (!streamServerClient) {
@@ -178,20 +232,20 @@ app.post("/api/stream/channel", async (req, res) => {
 });
 
 async function startServer() {
-  try {
-    if (MONGO_URI) {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+
+  if (MONGO_URI) {
+    try {
       await mongoose.connect(MONGO_URI);
       console.log("MongoDB connected");
-    } else {
-      console.log("MONGO_URI not set, starting without MongoDB");
+    } catch (error) {
+      console.error("MongoDB connection failed:", error.message);
+      console.log("Server is still running without MongoDB connection");
     }
-
-    app.listen(PORT, () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  } catch (error) {
-    console.error("Server startup failed:", error);
-    process.exit(1);
+  } else {
+    console.log("MONGO_URI not set, starting without MongoDB");
   }
 }
 
