@@ -172,11 +172,11 @@ io.on("connection", (socket) => {
         fromName: socket.user.fullName,
         callType,
       });
-      socket.emit("callRinging");
+      socket.emit("callRinging"); // optional
     } else {
       socket.emit("callFailed", { reason: "User is offline" });
     }
-  });
+});
 
   // Accept call
   socket.on("acceptCall", ({ to }) => {
