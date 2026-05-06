@@ -87,11 +87,12 @@ const login = async (req, res) => {
         });
 
         // TODO: add this NODE_ENV
+        // in signup and login cookie options
         res.cookie("token", token, {
             maxAge: 7 * 24 * 60 * 60 * 1000,
-            httpOnly: true, // prevent XSS attacks,
-            sameSite: process.env.NODE_ENV === "production" ? "none" : "strict", // allow cross-origin in production
-            secure: process.env.NODE_ENV === "production", // HTTPS only in production
+            httpOnly: true,
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+            secure: process.env.NODE_ENV === "production",
         });
 
         res.status(200).json({ success: true, user });
@@ -101,21 +102,15 @@ const login = async (req, res) => {
     }
 }
 
-// const logout = async (req, res) => {
-//     res.clearCookie("token");
-//     res.status(200).json({ success: true, message: "Logout Successful" })
-// }
-// controllers/authController.js
- const logout = (req, res) => {
-  res.clearCookie("jwt", {
-    httpOnly: true,
-    sameSite: "strict",
-    secure: process.env.NODE_ENV !== "development",
-  });
-
-  res.status(200).json({ message: "Logged out successfully" });
+// auth.controller.js (only the logout part shown)
+const logout = (req, res) => {
+    res.clearCookie("token", {
+        httpOnly: true,
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+        secure: process.env.NODE_ENV === "production",
+    });
+    res.status(200).json({ message: "Logged out successfully" });
 };
-
 
 
 const onboarding = async (req, res) => {

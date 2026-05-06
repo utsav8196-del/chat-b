@@ -1,152 +1,181 @@
+// server.js
+require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
-const dotenv = require("dotenv");
+const http = require("http");
 const mongoose = require("mongoose");
+const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
+const { Server } = require("socket.io");
+const cookie = require("cookie");
 
-// Load environment variables
-dotenv.config();
-
-// Import routes
+// Route imports
 const authRoutes = require("./routes/auth.route");
 const userRoutes = require("./routes/user.route");
-const chatRoutes = require("./routes/chat.route");
+const chatRoutes = require("./routes/chat.route");   // for Stream token if needed
 
-// Import utilities
-const { connectDB } = require("./lib/db");
-const { initializeStreamChat, generateStreamToken } = require("./lib/stream");
+// Models
+const Message = require("./models/Message");
+const User = require("./models/User");
 
-// Initialize Express app
 const app = express();
+const server = http.createServer(app);
 
-// Environment variables
-const PORT = process.env.PORT || 5000;
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
-const MONGO_URI = process.env.MONGO_URI;
-const STREAM_API_KEY = process.env.STREAM_API_KEY;
+// ---- MIDDLEWARE ----
+app.use(express.json());
+app.use(cookieParser());
 
-// Setup allowed origins
-const allowedOrigins = CLIENT_URL.split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+// Parse ALLOWED_ORIGINS
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(o => o.trim())
+  : ["http://localhost:5173"];
 
-allowedOrigins.push("https://chat-f-beta.vercel.app");
-
-// CORS Configuration
 app.use(
   cors({
-    origin(origin, callback) {
-      if (
-        !origin ||
-        allowedOrigins.includes(origin) ||
-        origin.endsWith(".vercel.app")
-      ) {
-        return callback(null, true);
+    origin: function (origin, callback) {
+      // Allow requests with no origin (mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
       }
-      return callback(null, false);
     },
     credentials: true,
   })
 );
 
-app.options("*", cors());
+// ---- DATABASE ----
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch(err => console.error("MongoDB connection error:", err));
 
-// Middleware
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ limit: "1mb", extended: true }));
-app.use(cookieParser());
-
-// Health Check Endpoints
-app.get("/", (_req, res) => {
-  res.json({ ok: true, message: "StackChat backend is running" });
-});
-
-app.get("/api/health", (_req, res) => {
-  res.json({
-    ok: true,
-    mongoConfigured: Boolean(MONGO_URI),
-    mongoConnected: mongoose.connection.readyState === 1,
-    streamConfigured: Boolean(STREAM_API_KEY && process.env.STREAM_API_SECRET),
-  });
-});
-
-// Route imports
+// ---- ROUTES ----
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
 
-// Stream Chat Token Endpoint
-app.post("/api/stream/token", (req, res) => {
+// ---- MESSAGE API (REST) ----
+app.post("/api/messages", async (req, res) => {
   try {
-    const streamClient = initializeStreamChat();
-    if (!streamClient) {
-      return res.status(500).json({
-        message: "Stream Chat is not configured. Set STREAM_API_KEY and STREAM_API_SECRET.",
-      });
-    }
-
-    const { userId, name, image } = req.body;
-
-    if (!userId || typeof userId !== "string") {
-      return res.status(400).json({ message: "userId is required" });
-    }
-
-    const token = generateStreamToken(userId);
-    
-    res.json({
-      apiKey: STREAM_API_KEY,
-      token,
-      user: {
-        id: userId,
-        name: name || userId,
-        image: image || "",
-      },
-    });
-  } catch (error) {
-    console.error("Stream token generation failed:", error);
-    res.status(500).json({
-      message: "Unable to generate Stream token",
-    });
+    const { senderId, receiverId, text } = req.body;
+    if (!senderId || !receiverId || !text)
+      return res.status(400).json({ message: "Missing fields" });
+    const msg = await Message.create({ senderId, receiverId, text });
+    res.status(201).json(msg);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Error Handling Middleware
-app.use((err, _req, res, _next) => {
-  console.error("Server error:", err);
-  res.status(err.status || 500).json({
-    message: err.message || "Internal server error",
+app.get("/api/messages/:user1/:user2", async (req, res) => {
+  try {
+    const { user1, user2 } = req.params;
+    const messages = await Message.find({
+      $or: [
+        { senderId: user1, receiverId: user2 },
+        { senderId: user2, receiverId: user1 },
+      ],
+    }).sort({ createdAt: 1 });
+    res.json(messages);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- SOCKET.IO SETUP ----
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+  },
+});
+
+// Track online users: userId -> socketId
+const onlineUsers = {};
+
+// Socket.IO authentication – read httpOnly cookie
+io.use(async (socket, next) => {
+  try {
+    const rawCookies = socket.handshake.headers.cookie;
+    if (!rawCookies) return next(new Error("No cookies"));
+    const parsed = cookie.parse(rawCookies);
+    const token = parsed.token;
+    if (!token) return next(new Error("No token cookie"));
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET_KEY);
+    const user = await User.findById(decoded.userId).select("-password");
+    if (!user) return next(new Error("User not found"));
+
+    socket.userId = user._id.toString();
+    socket.user = user;
+    next();
+  } catch (err) {
+    next(new Error("Authentication failed"));
+  }
+});
+
+io.on("connection", (socket) => {
+  console.log("🟢 User connected:", socket.userId);
+
+  // Mark as online
+  onlineUsers[socket.userId] = socket.id;
+  io.emit("getOnlineUsers", Object.keys(onlineUsers));
+
+  // Join a personal room (optional, for future features)
+  socket.join(socket.userId);
+
+  // Handle private message
+  socket.on("sendMessage", async ({ receiverId, text }) => {
+    try {
+      const message = await Message.create({
+        senderId: socket.userId,
+        receiverId,
+        text,
+      });
+
+      // Send to receiver if online
+      const receiverSocketId = onlineUsers[receiverId];
+      if (receiverSocketId) {
+        io.to(receiverSocketId).emit("newMessage", message);
+      }
+      // Send back to sender for immediate display
+      socket.emit("newMessage", message);
+    } catch (err) {
+      console.error("Message send error:", err);
+      socket.emit("messageError", { error: "Could not send message" });
+    }
+  });
+
+  // Typing indicators
+  socket.on("typing", (receiverId) => {
+    const receiverSocketId = onlineUsers[receiverId];
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("userTyping", {
+        userId: socket.userId,
+        name: socket.user.fullName,
+      });
+    }
+  });
+
+  socket.on("stopTyping", (receiverId) => {
+    const receiverSocketId = onlineUsers[receiverId];
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("userStopTyping", socket.userId);
+    }
+  });
+
+  // Disconnect
+  socket.on("disconnect", () => {
+    console.log("🔴 User disconnected:", socket.userId);
+    delete onlineUsers[socket.userId];
+    io.emit("getOnlineUsers", Object.keys(onlineUsers));
   });
 });
 
-// 404 Handler
-app.use((_req, res) => {
-  res.status(404).json({ message: "Route not found" });
+// ---- START ----
+const PORT = process.env.PORT || 8000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
-// Start Server
-async function startServer() {
-  try {
-    // Connect to MongoDB
-    if (MONGO_URI) {
-      await connectDB();
-      console.log("✓ MongoDB connected successfully");
-    } else {
-      console.warn("⚠ MONGO_URI not set, starting without MongoDB");
-    }
-
-    // Start listening
-    app.listen(PORT, () => {
-      console.log(`\n✓ Server running on http://localhost:${PORT}`);
-      console.log(`✓ Environment: ${process.env.NODE_ENV || "development"}`);
-      console.log(`✓ CORS Enabled for: ${allowedOrigins.slice(0, 2).join(", ")}...`);
-      console.log(`✓ Database: ${mongoose.connection.readyState === 1 ? "Connected" : "Disconnected"}\n`);
-    });
-  } catch (error) {
-    console.error("✗ Failed to start server:", error.message);
-    process.exit(1);
-  }
-}
-
-startServer();
-
-module.exports = app;
