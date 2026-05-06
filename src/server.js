@@ -12,7 +12,7 @@ const cookie = require("cookie");
 // Route imports
 const authRoutes = require("./routes/auth.route");
 const userRoutes = require("./routes/user.route");
-const chatRoutes = require("./routes/chat.route");   // for Stream token (if needed)
+const chatRoutes = require("./routes/chat.route");   // for Stream token (if you still need it)
 
 // Models
 const Message = require("./models/Message");
@@ -94,6 +94,9 @@ const io = new Server(server, {
 // Track online users: userId -> socketId
 const onlineUsers = {};
 
+// Store pending call info: callerId -> { targetUserId, callType, status: 'ringing' | 'accepted' }
+const pendingCalls = {};
+
 // Socket.IO authentication – read httpOnly cookie
 io.use(async (socket, next) => {
   try {
@@ -125,7 +128,7 @@ io.on("connection", (socket) => {
   // Join personal room
   socket.join(socket.userId);
 
-  // ---- Chat Messaging ----
+  // ===================== CHAT MESSAGING =====================
   socket.on("sendMessage", async ({ receiverId, text }) => {
     try {
       const message = await Message.create({
@@ -161,37 +164,53 @@ io.on("connection", (socket) => {
     }
   });
 
-  // ---- WebRTC Call Signaling ----
+  // ===================== WEBRTC CALL SIGNALING =====================
 
-  // Initiate call (ringing)
+  // Initiate a call (ringing)
   socket.on("callUser", ({ targetUserId, callType }) => {
     const targetSocketId = onlineUsers[targetUserId];
     if (targetSocketId) {
+      // Save pending call for this caller
+      pendingCalls[socket.userId] = {
+        targetUserId,
+        callType,
+        status: "ringing",
+      };
+
       io.to(targetSocketId).emit("incomingCall", {
         from: socket.userId,
         fromName: socket.user.fullName,
         callType,
       });
-      socket.emit("callRinging"); // optional
+      socket.emit("callRinging");
     } else {
       socket.emit("callFailed", { reason: "User is offline" });
     }
-});
+  });
 
-  // Accept call
+  // Receiver accepts call
   socket.on("acceptCall", ({ to }) => {
     const callerSocketId = onlineUsers[to];
+    const pending = pendingCalls[to];
+
+    if (pending) {
+      pending.status = "accepted";
+    }
+
     if (callerSocketId) {
+      // Caller still online with same socket
       io.to(callerSocketId).emit("callAccepted", {
         from: socket.userId,
         fromName: socket.user.fullName,
       });
     }
+    // If caller isn't online, they will pick it up via checkPendingCall when they reconnect
   });
 
   // Decline call
   socket.on("declineCall", ({ to }) => {
     const callerSocketId = onlineUsers[to];
+    delete pendingCalls[to];  // clean up
     if (callerSocketId) {
       io.to(callerSocketId).emit("callDeclined", {
         from: socket.userId,
@@ -203,49 +222,52 @@ io.on("connection", (socket) => {
   // End call
   socket.on("callEnd", ({ to }) => {
     const targetSocketId = onlineUsers[to];
+    delete pendingCalls[socket.userId];
+    delete pendingCalls[to];
     if (targetSocketId) {
       io.to(targetSocketId).emit("callEnded");
     }
   });
 
-  // WebRTC offer
+  // ----- WebRTC offer / answer / ICE -----
   socket.on("webrtc_offer", ({ to, offer }) => {
     const targetSocketId = onlineUsers[to];
     if (targetSocketId) {
-      io.to(targetSocketId).emit("webrtc_offer", {
-        from: socket.userId,
-        offer,
-      });
+      io.to(targetSocketId).emit("webrtc_offer", { from: socket.userId, offer });
     }
   });
 
-  // WebRTC answer
   socket.on("webrtc_answer", ({ to, answer }) => {
     const targetSocketId = onlineUsers[to];
     if (targetSocketId) {
-      io.to(targetSocketId).emit("webrtc_answer", {
-        from: socket.userId,
-        answer,
-      });
+      io.to(targetSocketId).emit("webrtc_answer", { from: socket.userId, answer });
     }
   });
 
-  // ICE candidate exchange
   socket.on("webrtc_ice_candidate", ({ to, candidate }) => {
     const targetSocketId = onlineUsers[to];
     if (targetSocketId) {
-      io.to(targetSocketId).emit("webrtc_ice_candidate", {
-        from: socket.userId,
-        candidate,
+      io.to(targetSocketId).emit("webrtc_ice_candidate", { from: socket.userId, candidate });
+    }
+  });
+
+  // When a caller reconnects (e.g., on CallPage), check if call was accepted
+  socket.on("checkPendingCall", () => {
+    const pending = pendingCalls[socket.userId];
+    if (pending && pending.status === "accepted") {
+      socket.emit("callAccepted", {
+        from: pending.targetUserId,
+        fromName: "Friend",   // You could fetch the actual name if desired
       });
     }
   });
 
-  // ---- Disconnect ----
+  // ===================== DISCONNECT =====================
   socket.on("disconnect", () => {
     console.log("🔴 User disconnected:", socket.userId);
     delete onlineUsers[socket.userId];
     io.emit("getOnlineUsers", Object.keys(onlineUsers));
+    // Note: We do NOT delete pendingCalls on disconnect, because the caller may be reconnecting.
   });
 });
 
