@@ -12,7 +12,7 @@ const cookie = require("cookie");
 // Route imports
 const authRoutes = require("./routes/auth.route");
 const userRoutes = require("./routes/user.route");
-const chatRoutes = require("./routes/chat.route");   // for Stream token if needed
+const chatRoutes = require("./routes/chat.route");   // for Stream token (if needed)
 
 // Models
 const Message = require("./models/Message");
@@ -25,7 +25,7 @@ const server = http.createServer(app);
 app.use(express.json());
 app.use(cookieParser());
 
-// Parse ALLOWED_ORIGINS
+// Parse ALLOWED_ORIGINS from env
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map(o => o.trim())
   : ["http://localhost:5173"];
@@ -33,7 +33,6 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (mobile apps, curl, etc.)
       if (!origin) return callback(null, true);
       if (allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
@@ -56,7 +55,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/chat", chatRoutes);
 
-// ---- MESSAGE API (REST) ----
+// ---- MESSAGE REST API ----
 app.post("/api/messages", async (req, res) => {
   try {
     const { senderId, receiverId, text } = req.body;
@@ -123,10 +122,10 @@ io.on("connection", (socket) => {
   onlineUsers[socket.userId] = socket.id;
   io.emit("getOnlineUsers", Object.keys(onlineUsers));
 
-  // Join a personal room (optional, for future features)
+  // Join personal room
   socket.join(socket.userId);
 
-  // Handle private message
+  // ---- Chat Messaging ----
   socket.on("sendMessage", async ({ receiverId, text }) => {
     try {
       const message = await Message.create({
@@ -134,13 +133,10 @@ io.on("connection", (socket) => {
         receiverId,
         text,
       });
-
-      // Send to receiver if online
       const receiverSocketId = onlineUsers[receiverId];
       if (receiverSocketId) {
         io.to(receiverSocketId).emit("newMessage", message);
       }
-      // Send back to sender for immediate display
       socket.emit("newMessage", message);
     } catch (err) {
       console.error("Message send error:", err);
@@ -148,7 +144,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Typing indicators
   socket.on("typing", (receiverId) => {
     const receiverSocketId = onlineUsers[receiverId];
     if (receiverSocketId) {
@@ -166,7 +161,87 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Disconnect
+  // ---- WebRTC Call Signaling ----
+
+  // Initiate call (ringing)
+  socket.on("callUser", ({ targetUserId, callType }) => {
+    const targetSocketId = onlineUsers[targetUserId];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("incomingCall", {
+        from: socket.userId,
+        fromName: socket.user.fullName,
+        callType,
+      });
+      socket.emit("callRinging");
+    } else {
+      socket.emit("callFailed", { reason: "User is offline" });
+    }
+  });
+
+  // Accept call
+  socket.on("acceptCall", ({ to }) => {
+    const callerSocketId = onlineUsers[to];
+    if (callerSocketId) {
+      io.to(callerSocketId).emit("callAccepted", {
+        from: socket.userId,
+        fromName: socket.user.fullName,
+      });
+    }
+  });
+
+  // Decline call
+  socket.on("declineCall", ({ to }) => {
+    const callerSocketId = onlineUsers[to];
+    if (callerSocketId) {
+      io.to(callerSocketId).emit("callDeclined", {
+        from: socket.userId,
+        fromName: socket.user.fullName,
+      });
+    }
+  });
+
+  // End call
+  socket.on("callEnd", ({ to }) => {
+    const targetSocketId = onlineUsers[to];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("callEnded");
+    }
+  });
+
+  // WebRTC offer
+  socket.on("webrtc_offer", ({ to, offer }) => {
+    const targetSocketId = onlineUsers[to];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("webrtc_offer", {
+        from: socket.userId,
+        offer,
+      });
+    }
+  });
+
+  // WebRTC answer
+  socket.on("webrtc_answer", ({ to, answer }) => {
+    const targetSocketId = onlineUsers[to];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("webrtc_answer", {
+        from: socket.userId,
+        answer,
+      });
+    }
+  });
+
+  // ICE candidate exchange
+  socket.on("webrtc_ice_candidate", ({ to, candidate }) => {
+    const targetSocketId = onlineUsers[to];
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("webrtc_ice_candidate", {
+        from: socket.userId,
+        candidate,
+      });
+    }
+  });
+
+  // ---- Disconnect ----
   socket.on("disconnect", () => {
     console.log("🔴 User disconnected:", socket.userId);
     delete onlineUsers[socket.userId];
@@ -174,7 +249,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// ---- START ----
+// ---- START SERVER ----
 const PORT = process.env.PORT || 8000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
