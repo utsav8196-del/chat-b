@@ -8,8 +8,8 @@ async function getRecommendedUsers(req, res) {
 
         const recommendedUsers = await User.find({
             $and: [
-                { _id: { $ne: currentUserId } }, //exclude current user
-                { _id: { $nin: currentUser.friends } }, // exclude current user's friends
+                { _id: { $ne: currentUserId } },
+                { _id: { $nin: currentUser.friends } },
                 { isOnboarded: true },
             ],
         });
@@ -33,24 +33,44 @@ async function getMyFriends(req, res) {
     }
 }
 
-// controllers/user.controller.js (only sendFriendRequest shown)
-
 async function sendFriendRequest(req, res) {
     try {
         const myId = req.user.id;
         const { id: recipientId } = req.params;
 
-        // ... (existing validations remain unchanged) ...
+        if (myId === recipientId) {
+            return res.status(400).json({ message: "You can't send friend request to yourself" });
+        }
+
+        const recipient = await User.findById(recipientId);
+        if (!recipient) {
+            return res.status(404).json({ message: "Recipient not found" });
+        }
+
+        if (recipient.friends.includes(myId)) {
+            return res.status(400).json({ message: "You are already friends with this user" });
+        }
+
+        const existingRequest = await FriendRequest.findOne({
+            $or: [
+                { sender: myId, recipient: recipientId },
+                { sender: recipientId, recipient: myId },
+            ],
+        });
+
+        if (existingRequest) {
+            return res.status(400).json({ message: "A friend request already exists between you and this user" });
+        }
 
         const friendRequest = await FriendRequest.create({
             sender: myId,
             recipient: recipientId,
         });
 
-        // ---- EMIT SOCKET EVENT TO RECIPIENT ----
-        const userSockets = req.userSockets;
+        // Emit socket event if possible
         const io = req.io;
-        if (userSockets && userSockets[recipientId]) {
+        const userSockets = req.userSockets;
+        if (io && userSockets && userSockets[recipientId]) {
             userSockets[recipientId].forEach(socketId => {
                 io.to(socketId).emit("friendRequestReceived", {
                     from: myId,
@@ -69,14 +89,12 @@ async function sendFriendRequest(req, res) {
 async function acceptFriendRequest(req, res) {
     try {
         const { id: requestId } = req.params;
-
         const friendRequest = await FriendRequest.findById(requestId);
 
         if (!friendRequest) {
             return res.status(404).json({ message: "Friend request not found" });
         }
 
-        // Verify the current user is the recipient
         if (friendRequest.recipient.toString() !== req.user.id) {
             return res.status(403).json({ message: "You are not authorized to accept this request" });
         }
@@ -84,8 +102,6 @@ async function acceptFriendRequest(req, res) {
         friendRequest.status = "accepted";
         await friendRequest.save();
 
-        // add each user to the other's friends array
-        // $addToSet: adds elements to an array only if they do not already exist.
         await User.findByIdAndUpdate(friendRequest.sender, {
             $addToSet: { friends: friendRequest.recipient },
         });
@@ -100,30 +116,6 @@ async function acceptFriendRequest(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-
-async function declineFriendRequest(req, res) {
-    try {
-        const { id: requestId } = req.params;
-        const friendRequest = await FriendRequest.findById(requestId);
-
-        if (!friendRequest) {
-            return res.status(404).json({ message: "Friend request not found" });
-        }
-
-        // Only the recipient can decline
-        if (friendRequest.recipient.toString() !== req.user.id) {
-            return res.status(403).json({ message: "Not authorized" });
-        }
-
-        // Delete the request (or set status to "declined" if you prefer)
-        await FriendRequest.findByIdAndDelete(requestId);
-        res.status(200).json({ message: "Friend request declined" });
-    } catch (error) {
-        console.error("Error in declineFriendRequest", error.message);
-        res.status(500).json({ message: "Internal Server Error" });
-    }
-}
-
 
 async function getFriendRequests(req, res) {
     try {
@@ -158,4 +150,35 @@ async function getOutgoingFriendReqs(req, res) {
     }
 }
 
-module.exports = { getRecommendedUsers, getMyFriends, sendFriendRequest, acceptFriendRequest, getFriendRequests, getOutgoingFriendReqs };
+// ✅ NEW: Decline friend request
+async function declineFriendRequest(req, res) {
+    try {
+        const { id: requestId } = req.params;
+        const friendRequest = await FriendRequest.findById(requestId);
+
+        if (!friendRequest) {
+            return res.status(404).json({ message: "Friend request not found" });
+        }
+
+        // Only the recipient can decline
+        if (friendRequest.recipient.toString() !== req.user.id) {
+            return res.status(403).json({ message: "Not authorized" });
+        }
+
+        await FriendRequest.findByIdAndDelete(requestId);
+        res.status(200).json({ message: "Friend request declined" });
+    } catch (error) {
+        console.error("Error in declineFriendRequest", error.message);
+        res.status(500).json({ message: "Internal Server Error" });
+    }
+}
+
+module.exports = {
+    getRecommendedUsers,
+    getMyFriends,
+    sendFriendRequest,
+    acceptFriendRequest,
+    getFriendRequests,
+    getOutgoingFriendReqs,
+    declineFriendRequest,      // ✅ Make sure it's exported
+};
