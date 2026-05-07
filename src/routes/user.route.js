@@ -8,6 +8,7 @@ const {
     getOutgoingFriendReqs,
     getRecommendedUsers,
     sendFriendRequest,
+    declineFriendRequest, 
 } = require("../controllers/user.controller");
 
 const router = express.Router();
@@ -23,5 +24,5 @@ router.put("/friend-request/:id/accept", acceptFriendRequest);
 
 router.get("/friend-requests", getFriendRequests);
 router.get("/outgoing-friend-requests", getOutgoingFriendReqs);
-
+router.delete("/friend-request/:id/decline", declineFriendRequest);
 module.exports = router;
